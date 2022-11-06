@@ -1,0 +1,20 @@
+[package]
+name = "siling"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+async-channel = "1.7.1"
+async-trait = "0.1.58"
+chrono = { version = "0.4.22", features = ["serde"] }
+futures = "0.3.25"
+futures-timer = "3.0.2"
+serde = { version = "1.0.147", features = ["derive"] }
+serde_json = "1.0.87"
+thiserror = "1.0.37"
+
+[features]
+default = ["mock"]
+mock = []
