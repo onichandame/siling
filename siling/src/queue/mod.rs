@@ -1,12 +1,11 @@
-use std::{marker::PhantomData, time::Duration};
+use std::{marker::PhantomData, pin::Pin};
 
-use chrono::format::Item;
-use futures::{future::OptionFuture, select, stream, Future, FutureExt, Stream, StreamExt};
+use futures::{future::OptionFuture, select, stream, FutureExt, Stream, StreamExt};
 use futures_timer::Delay;
 
 use crate::{
     argument::Argument,
-    claim::{ClaimConfig, ClaimResult},
+    claim::ClaimResult,
     event::{Event, EventAdaptor},
     pubsub::Pubsub,
     storage::StorageAdaptor,
@@ -15,7 +14,10 @@ use crate::{
 
 use self::error::QueueError;
 
+mod config;
 mod error;
+
+pub use config::QueueConfig;
 
 /// A queue receives and dispatches a single type of tasks
 #[derive(Clone)]
@@ -25,6 +27,7 @@ pub struct Queue<
     TStorage: StorageAdaptor,
     TEvent: EventAdaptor,
 > {
+    config: QueueConfig,
     storage: TStorage,
     pubsub: Pubsub<TEvent>,
     input: PhantomData<TInput>,
@@ -34,8 +37,9 @@ pub struct Queue<
 impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: EventAdaptor>
     Queue<TInput, TOutput, TStorage, TEvent>
 {
-    pub fn new(storage: TStorage, event: TEvent) -> Self {
+    pub fn new(storage: TStorage, event: TEvent, config: QueueConfig) -> Self {
         Self {
+            config,
             storage,
             pubsub: Pubsub::new(event),
             input: PhantomData,
@@ -51,7 +55,7 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
     ) -> Result<Option<PendingTask>, QueueError<TStorage::Error, TEvent::Error>> {
         let task = self
             .storage
-            .add_task(serde_json::to_value(&input)?, config)
+            .add_task(serde_json::to_string(&input)?, config)
             .await
             .map_err(|e| QueueError::StorageError(e))?;
         if let Some(task) = task.as_ref() {
@@ -59,75 +63,77 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
                 .broadcast(Event::TaskAdded(task.get_task_id().clone()))
                 .await
                 .map_err(|e| QueueError::EventError(e))?;
+            if let PendingTask::Mature(task) = task {
+                self.pubsub
+                    .broadcast(Event::TaskMaturated(task.task_id.clone()))
+                    .await
+                    .map_err(|e| QueueError::EventError(e))?;
+            }
         }
         Ok(task)
     }
 
-    async fn test() -> Result<impl Stream<Item = Result<String, i32>>, i32> {
-        Ok(stream::try_unfold(0, |next| async move { Err(next) }))
-    }
-
     /// Continuously pull the oldest pending task from the queue. If there is no mature task in
-    /// the queue, it will block until a task is maturated/added.
+    /// the queue, it will block until a task is maturated.
     pub async fn consume(
         self,
-        config: Option<ClaimConfig>,
     ) -> Result<
         impl Stream<Item = Result<ClaimedTask<TInput>, QueueError<TStorage::Error, TEvent::Error>>>,
         QueueError<TStorage::Error, TEvent::Error>,
     > {
-        Ok(stream::try_unfold(
-            (self, None),
-            move |(mut this, next_task)| {
-                let config = config.clone();
-                async move {
-                    let task = this.try_pull(&config).await?;
-                    if let ClaimResult::Claimed(task) = task {
-                        return Ok(Some((task, (this, next_task))));
-                    }
-                    let mut ticker: OptionFuture<
-                        Result<(), QueueError<TStorage::Error, TEvent::Error>>,
-                    > = if let ClaimResult::Immature(task) = task {
-                        Some(Self::wait_for_task(task.clone()))
-                    } else {
-                        None
-                    }
-                    .into();
-                    let mut subscription = Box::pin(this.pubsub.subscribe(None).await?.fuse());
-                    loop {
-                        select! {
-                            tick = ticker => {
-                                if tick.is_some() {
-                                    this.pubsub.narrowcast(Event::TaskMaturated("".to_owned())).await?;
-                                }
-                            }
-                            ev = subscription.select_next_some() => {
-                                match ev {
-                                    Event::TaskAdded(_) | Event::TaskMaturated(_) => {
-                                        let task = this.try_pull(&config).await?;
-                                        if let ClaimResult::Claimed(task) = task {
-                                            return Ok(Some((task,(this, next_task))));
-                                        } else if let ClaimResult::Immature(task) = task {
-                                            ticker = Box::pin(Self::wait_for_task(Some(task).clone()).fuse());
-                                        }
-                                    }
-                                    _others => {}
-                                }
-                            }
-                        };
-                    }
+        Ok(stream::try_unfold(self, move |mut this| async move {
+            let task = this.try_pull().await?;
+            if let ClaimResult::Claimed(task) = task {
+                return Ok(Some((task, this)));
+            }
+            let mut ticker: Pin<Box<OptionFuture<_>>> = Box::pin(
+                if let ClaimResult::Immature(task) = task {
+                    Some(Self::wait_for_task(task.clone()).fuse())
+                } else {
+                    None
                 }
-            },
-        ))
+                .into(),
+            );
+            let mut subscription = Box::pin(this.pubsub.subscribe(None).await?.fuse());
+            loop {
+                select! {
+                    tick = ticker => {
+                        if tick.is_some() {
+                            this.pubsub.narrowcast(Event::TaskMaturated("".to_owned())).await?;
+                        }
+                    }
+                    ev = subscription.select_next_some() => {
+                        match ev {
+                            Event::TaskMaturated(_) => {
+                                let task = this.try_pull().await?;
+                                if let ClaimResult::Claimed(task) = task {
+                                    return Ok(Some((task, this)));
+                                } else if let ClaimResult::Immature(task) = task {
+                                    ticker = Box::pin(
+                                        Some(Self::wait_for_task(task.clone()).fuse()).into()
+                                    );
+                                }
+                            }
+                            _others => {}
+                        }
+                    }
+                };
+            }
+        }))
     }
 
     async fn try_pull(
         &self,
-        config: &Option<ClaimConfig>,
     ) -> Result<ClaimResult<TInput>, QueueError<TStorage::Error, TEvent::Error>> {
+        if let Some(ttl) = self.config.acked_task_ttl.as_ref() {
+            self.storage
+                .cleanup(ttl.clone())
+                .await
+                .map_err(|e| QueueError::StorageError(e))?;
+        }
         let task = self
             .storage
-            .claim_task(config)
+            .claim_task()
             .await
             .map_err(|e| QueueError::StorageError(e))?;
         Ok(match task {
@@ -151,12 +157,12 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
 
     fn parse_claim(
         &self,
-        claim: &ClaimedTask<serde_json::Value>,
+        claim: &ClaimedTask<String>,
     ) -> Result<ClaimedTask<TInput>, serde_json::Error> {
         Ok(ClaimedTask {
             task_id: claim.task_id.clone(),
             claim_id: claim.claim_id.clone(),
-            input: serde_json::from_value(claim.input.clone())?,
+            input: serde_json::from_str(&claim.input)?,
         })
     }
 

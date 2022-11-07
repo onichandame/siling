@@ -15,9 +15,11 @@ pub struct Pubsub<TAdaptor: EventAdaptor> {
 }
 
 #[derive(Error, Debug)]
-pub enum PubsubError<TAdaptorError> {
+pub enum PubsubError<TBroadcastError> {
+    #[error("Broadcast Error: {0}")]
+    BroadcastError(#[source] TBroadcastError),
     #[error(transparent)]
-    AdaptorError(#[from] TAdaptorError),
+    NarrowcastError(#[from] async_channel::SendError<Event>),
 }
 
 impl<TAdaptor: EventAdaptor> Pubsub<TAdaptor> {
@@ -27,11 +29,15 @@ impl<TAdaptor: EventAdaptor> Pubsub<TAdaptor> {
     }
 
     pub async fn broadcast(&mut self, event: Event) -> Result<(), PubsubError<TAdaptor::Error>> {
-        Ok(self.adaptor.publish(event).await?)
+        Ok(self
+            .adaptor
+            .publish(event)
+            .await
+            .map_err(|e| PubsubError::BroadcastError(e))?)
     }
 
     pub async fn narrowcast(&mut self, event: Event) -> Result<(), PubsubError<TAdaptor::Error>> {
-        self.channel.0.send(event).await;
+        self.channel.0.send(event).await?;
         Ok(())
     }
 
@@ -39,7 +45,11 @@ impl<TAdaptor: EventAdaptor> Pubsub<TAdaptor> {
         &mut self,
         id: Option<TaskId>,
     ) -> Result<Pin<Box<dyn Stream<Item = Event>>>, PubsubError<TAdaptor::Error>> {
-        let broad = self.adaptor.subscribe(id.clone()).await?;
+        let broad = self
+            .adaptor
+            .subscribe(id.clone())
+            .await
+            .map_err(|e| PubsubError::BroadcastError(e))?;
         let narrow = Box::pin(self.channel.1.clone().filter(move |v| {
             let id = id.clone();
             let v = v.clone();

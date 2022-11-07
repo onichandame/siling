@@ -7,4 +7,8 @@ description = "A reference implementation of siling only made for tests"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+async-channel = "1.7.1"
+async-trait = "0.1.58"
+futures = "0.3.25"
 siling = { path = "../siling" }
+thiserror = "1.0.37"

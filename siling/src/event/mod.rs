@@ -5,10 +5,12 @@ use futures::Stream;
 
 use crate::task::TaskId;
 
-pub trait EventError: std::error::Error + Send + Sync {}
+mod test;
+
+pub trait EventError: std::error::Error + Send + Sync + Clone {}
 
 #[async_trait]
-pub trait EventAdaptor: Send + Sync {
+pub trait EventAdaptor: Send + Sync + Clone {
     type Error: EventError;
     /// Broadcast an Event associating with a task to all subscribers.
     async fn publish(&self, event: Event) -> Result<(), Self::Error>;
@@ -19,7 +21,7 @@ pub trait EventAdaptor: Send + Sync {
     ) -> Result<Pin<Box<dyn Stream<Item = Event>>>, Self::Error>;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Event {
     TaskAdded(TaskId),
     TaskMaturated(TaskId),
@@ -37,3 +39,5 @@ impl Event {
         }
     }
 }
+
+impl<T: std::error::Error + Send + Sync + Clone> EventError for T {}
