@@ -1,4 +1,3 @@
-#[cfg(test)]
 #[macro_export]
 macro_rules! test_events {
     ($factory: expr) => {

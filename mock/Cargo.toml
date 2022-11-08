@@ -11,4 +11,8 @@ async-channel = "1.7.1"
 async-trait = "0.1.58"
 futures = "0.3.25"
 siling = { path = "../siling" }
+trait_tests = { path = "../tests" }
 thiserror = "1.0.37"
+
+[dev-dependencies]
+tokio = { version = "1.21.2", features = ["macros", "rt"] }

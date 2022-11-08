@@ -5,9 +5,9 @@ use futures::Stream;
 
 use crate::task::TaskId;
 
-mod test;
+mod error;
 
-pub trait EventError: std::error::Error + Send + Sync + Clone {}
+pub use error::EventError;
 
 #[async_trait]
 pub trait EventAdaptor: Send + Sync + Clone {
@@ -39,5 +39,3 @@ impl Event {
         }
     }
 }
-
-impl<T: std::error::Error + Send + Sync + Clone> EventError for T {}
