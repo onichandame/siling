@@ -21,7 +21,7 @@ pub trait EventAdaptor: Send + Sync + Clone {
     ) -> Result<Pin<Box<dyn Stream<Item = Event>>>, Self::Error>;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     TaskAdded(TaskId),
     TaskMaturated(TaskId),

@@ -6,3 +6,6 @@ pub mod storage;
 pub mod task;
 
 mod pubsub;
+
+#[cfg(feature = "tests")]
+pub use test_macros::test_event_adaptor;

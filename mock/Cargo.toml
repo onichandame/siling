@@ -10,8 +10,7 @@ description = "A reference implementation of siling only made for tests"
 async-channel = "1.7.1"
 async-trait = "0.1.58"
 futures = "0.3.25"
-siling = { path = "../siling" }
-trait_tests = { path = "../tests" }
+siling = { path = "../siling", features = ["tests"] }
 thiserror = "1.0.37"
 
 [dev-dependencies]

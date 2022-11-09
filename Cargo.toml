@@ -1,2 +1,2 @@
 [workspace]
-members = ["siling", "mock", "tests"]
+members = ["siling", "mock", "test_macros"]

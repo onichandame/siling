@@ -8,7 +8,6 @@ use siling::{
     task::TaskId,
 };
 use thiserror::Error;
-use trait_tests::test_event_adaptor;
 
 #[derive(Clone)]
 pub struct MockEventAdaptor {
@@ -55,4 +54,7 @@ impl EventAdaptor for MockEventAdaptor {
     }
 }
 
+#[cfg(test)]
+use siling::test_event_adaptor;
+#[cfg(test)]
 test_event_adaptor!(MockEventAdaptor::new());
