@@ -5,7 +5,9 @@ use crate::{
     task::{AckedTask, ClaimedTask, PendingTask, Task, TaskConfig, TaskId},
 };
 
-pub trait StorageError: std::error::Error + Send + Sync {}
+pub use self::error::StorageError;
+
+mod error;
 
 #[async_trait]
 pub trait StorageAdaptor: Send + Sync {
@@ -14,20 +16,20 @@ pub trait StorageAdaptor: Send + Sync {
     ///
     /// Returns the id of the new task or None if the task already exists
     async fn add_task(
-        &self,
+        &mut self,
         input: String,
         config: Option<TaskConfig>,
     ) -> Result<Option<PendingTask>, Self::Error>;
     /// Try to claim a pending task for consumption
-    async fn claim_task(&self) -> Result<ClaimResult<String>, Self::Error>;
+    async fn claim_task(&mut self) -> Result<ClaimResult<String>, Self::Error>;
     /// Report to the queue the output of a finished task. Returns Err if the task is not found or already acknowledged.
     async fn ack_task(
-        &self,
+        &mut self,
         claim: ClaimedTask<String>,
         output: String,
     ) -> Result<AckedTask<String>, Self::Error>;
     /// Get the current state of a task
-    async fn find_task(&self, id: TaskId) -> Result<Option<Task<String, String>>, Self::Error>;
+    async fn find_task(&mut self, id: TaskId) -> Result<Option<Task<String, String>>, Self::Error>;
     /// Delete old acked task and revoke timed-out claimes
-    async fn cleanup(&self, ttl: chrono::Duration) -> Result<(), Self::Error>;
+    async fn cleanup(&mut self, ttl: chrono::Duration) -> Result<(), Self::Error>;
 }

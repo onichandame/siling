@@ -15,6 +15,7 @@ serde = { version = "1.0.147", features = ["derive"] }
 serde_json = "1.0.87"
 thiserror = "1.0.37"
 test_macros = { path = "../test_macros", optional = true }
+async-broadcast = "0.4.1"
 
 [features]
 tests = ["dep:test_macros"]

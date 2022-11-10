@@ -1,6 +1,6 @@
 use std::pin::Pin;
 
-use async_channel::{Receiver, SendError, Sender};
+use async_broadcast::{broadcast, Receiver, SendError, Sender};
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use siling::{
@@ -22,7 +22,7 @@ pub enum Error {
 
 impl MockEventAdaptor {
     pub fn new() -> Self {
-        let channel = async_channel::bounded(8);
+        let channel = broadcast(8);
         Self { channel }
     }
 }
@@ -31,7 +31,7 @@ impl MockEventAdaptor {
 impl EventAdaptor for MockEventAdaptor {
     type Error = Error;
     async fn publish(&self, event: Event) -> Result<(), Self::Error> {
-        self.channel.0.send(event).await?;
+        self.channel.0.broadcast(event).await?;
         Ok(())
     }
 

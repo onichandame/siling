@@ -123,7 +123,7 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
     }
 
     async fn try_pull(
-        &self,
+        &mut self,
     ) -> Result<ClaimResult<TInput>, QueueError<TStorage::Error, TEvent::Error>> {
         if let Some(ttl) = self.config.acked_task_ttl.as_ref() {
             self.storage

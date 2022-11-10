@@ -11,7 +11,10 @@ use crate::{
 #[derive(Clone)]
 pub struct Pubsub<TAdaptor: EventAdaptor> {
     adaptor: TAdaptor,
-    channel: (async_channel::Sender<Event>, async_channel::Receiver<Event>),
+    channel: (
+        async_broadcast::Sender<Event>,
+        async_broadcast::Receiver<Event>,
+    ),
 }
 
 #[derive(Error, Debug)]
@@ -19,12 +22,12 @@ pub enum PubsubError<TBroadcastError> {
     #[error("Broadcast Error: {0}")]
     BroadcastError(#[source] TBroadcastError),
     #[error(transparent)]
-    NarrowcastError(#[from] async_channel::SendError<Event>),
+    NarrowcastError(#[from] async_broadcast::SendError<Event>),
 }
 
 impl<TAdaptor: EventAdaptor> Pubsub<TAdaptor> {
     pub fn new(adaptor: TAdaptor) -> Self {
-        let channel = async_channel::bounded(16);
+        let channel = async_broadcast::broadcast(16);
         Self { adaptor, channel }
     }
 
@@ -37,7 +40,7 @@ impl<TAdaptor: EventAdaptor> Pubsub<TAdaptor> {
     }
 
     pub async fn narrowcast(&mut self, event: Event) -> Result<(), PubsubError<TAdaptor::Error>> {
-        self.channel.0.send(event).await?;
+        self.channel.0.broadcast(event).await?;
         Ok(())
     }
 
