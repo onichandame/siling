@@ -51,7 +51,7 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
     pub async fn push(
         &mut self,
         input: TInput,
-        config: Option<TaskConfig>,
+        config: TaskConfig,
     ) -> Result<Option<PendingTask>, QueueError<TStorage::Error, TEvent::Error>> {
         let task = self
             .storage
@@ -73,7 +73,7 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
         Ok(task)
     }
 
-    /// Continuously pull the oldest pending task from the queue. If there is no mature task in
+    /// Continuously pulls the oldest pending task from the queue. If there is no mature task in
     /// the queue, it will block until a task is maturated.
     pub async fn consume(
         self,
@@ -83,11 +83,11 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
     > {
         Ok(stream::try_unfold(self, move |mut this| async move {
             let task = this.try_pull().await?;
-            if let ClaimResult::Claimed(task) = task {
+            if let Some(ClaimResult::Claimed(task)) = task {
                 return Ok(Some((task, this)));
             }
             let mut ticker: Pin<Box<OptionFuture<_>>> = Box::pin(
-                if let ClaimResult::Immature(task) = task {
+                if let Some(ClaimResult::Immature(task)) = task {
                     Some(Self::wait_for_task(task.clone()).fuse())
                 } else {
                     None
@@ -106,9 +106,9 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
                         match ev {
                             Event::TaskMaturated(_) => {
                                 let task = this.try_pull().await?;
-                                if let ClaimResult::Claimed(task) = task {
+                                if let Some(ClaimResult::Claimed(task)) = task {
                                     return Ok(Some((task, this)));
-                                } else if let ClaimResult::Immature(task) = task {
+                                } else if let Some(ClaimResult::Immature(task)) = task {
                                     ticker = Box::pin(
                                         Some(Self::wait_for_task(task.clone()).fuse()).into()
                                     );
@@ -122,12 +122,37 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
         }))
     }
 
-    async fn try_pull(
+    /// Report the output of a task to the queue and mark it as acknowledged
+    pub async fn ack(
         &mut self,
-    ) -> Result<ClaimResult<TInput>, QueueError<TStorage::Error, TEvent::Error>> {
+        claim: ClaimedTask<TInput>,
+        output: TOutput,
+    ) -> Result<(), QueueError<TStorage::Error, TEvent::Error>> {
+        self.storage
+            .ack_task(
+                Self::reverse_claim(&claim)?,
+                serde_json::to_string(&output)?,
+            )
+            .await
+            .map_err(|e| QueueError::StorageError(e))?;
+        self.pubsub
+            .broadcast(Event::TaskAcked(claim.task_id.clone()))
+            .await?;
         if let Some(ttl) = self.config.acked_task_ttl.as_ref() {
             self.storage
                 .cleanup(ttl.clone())
+                .await
+                .map_err(|e| QueueError::StorageError(e))?;
+        }
+        Ok(())
+    }
+
+    async fn try_pull(
+        &mut self,
+    ) -> Result<Option<ClaimResult<TInput>>, QueueError<TStorage::Error, TEvent::Error>> {
+        if let Some(ttl) = self.config.idle_claim_ttl.as_ref() {
+            self.storage
+                .revoke(ttl.clone())
                 .await
                 .map_err(|e| QueueError::StorageError(e))?;
         }
@@ -137,9 +162,11 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
             .await
             .map_err(|e| QueueError::StorageError(e))?;
         Ok(match task {
-            ClaimResult::Claimed(task) => ClaimResult::Claimed(self.parse_claim(&task)?),
-            ClaimResult::Immature(task) => ClaimResult::Immature(task),
-            ClaimResult::None => ClaimResult::None,
+            Some(task) => Some(match task {
+                ClaimResult::Claimed(task) => Self::parse_claim(&task)?.into(),
+                ClaimResult::Immature(task) => task.into(),
+            }),
+            None => None,
         })
     }
 
@@ -155,10 +182,7 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
         Ok(())
     }
 
-    fn parse_claim(
-        &self,
-        claim: &ClaimedTask<String>,
-    ) -> Result<ClaimedTask<TInput>, serde_json::Error> {
+    fn parse_claim(claim: &ClaimedTask<String>) -> Result<ClaimedTask<TInput>, serde_json::Error> {
         Ok(ClaimedTask {
             task_id: claim.task_id.clone(),
             claim_id: claim.claim_id.clone(),
@@ -166,16 +190,15 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
         })
     }
 
-    ///// Report the output of a task to the queue and mark it as acknowledged
-    //pub async fn ack(&self, task: AckedTask<TOutput>) -> Result<(), QueueError> {
-    //    self.storage
-    //        .ack_task(task.id.clone(), serde_json::to_value(task.output)?)
-    //        .await?;
-    //    self.event
-    //        .broadcast(Event::TaskAcked(task.id.clone()))
-    //        .await?;
-    //    Ok(())
-    //}
+    fn reverse_claim(
+        claim: &ClaimedTask<TInput>,
+    ) -> Result<ClaimedTask<String>, serde_json::Error> {
+        Ok(ClaimedTask {
+            task_id: claim.task_id.clone(),
+            claim_id: claim.claim_id.clone(),
+            input: serde_json::to_string(&claim.input)?,
+        })
+    }
 
     ///// Get the current status of a task
     //pub async fn fetch(&self, id: TaskId) -> Result<Option<Task<TInput, TOutput>>, QueueError> {

@@ -28,8 +28,8 @@ pub fn expand_event_adaptor_tests(factory: TokenStream) -> TokenStream {
                     panic!("no event received");
                 };
                 adaptor.publish(Event::TaskAdded(task_id.clone())).await.unwrap();
-                assert_eq!(subscriber1.await, Event::TaskAdded(task_id.clone()));
-                assert_eq!(subscriber2.await, Event::TaskAdded(task_id.clone()));
+                assert_eq!(subscriber1.await.get_task_id(), &task_id);
+                assert_eq!(subscriber2.await.get_task_id(), &task_id);
             }
         }
     }

@@ -11,6 +11,16 @@ pub enum ClaimResult<TInput: Argument> {
     Immature(ImmatureTask),
     /// A mature task has been claimed
     Claimed(ClaimedTask<TInput>),
-    /// The pending list is empty
-    None,
+}
+
+impl<TInput: Argument> From<ImmatureTask> for ClaimResult<TInput> {
+    fn from(task: ImmatureTask) -> Self {
+        Self::Immature(task)
+    }
+}
+
+impl<TInput: Argument> From<ClaimedTask<TInput>> for ClaimResult<TInput> {
+    fn from(task: ClaimedTask<TInput>) -> Self {
+        Self::Claimed(task)
+    }
 }
