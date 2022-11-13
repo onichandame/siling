@@ -4,7 +4,7 @@ use futures::{future::OptionFuture, select, stream, FutureExt, Stream, StreamExt
 use futures_timer::Delay;
 use siling_traits::{
     AckedTask, Argument, ClaimResult, ClaimedTask, Event, EventAdaptor, ImmatureTask, PendingTask,
-    StorageAdaptor, Task, TaskConfig,
+    StorageAdaptor, Task, TaskConfig, TaskId,
 };
 
 use crate::pubsub::Pubsub;
@@ -75,48 +75,52 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
     pub async fn consume(
         self,
     ) -> Result<
-        impl Stream<Item = Result<ClaimedTask<TInput>, QueueError<TStorage::Error, TEvent::Error>>>,
+        impl Stream<Item = Result<ClaimedTask<TInput>, QueueError<TStorage::Error, TEvent::Error>>>
+            + Send,
         QueueError<TStorage::Error, TEvent::Error>,
     > {
-        Ok(stream::try_unfold(self, move |mut this| async move {
-            let task = this.try_pull().await?;
-            if let Some(ClaimResult::Claimed(task)) = task {
-                return Ok(Some((task, this)));
-            }
-            let mut ticker: Pin<Box<OptionFuture<_>>> = Box::pin(
-                if let Some(ClaimResult::Immature(task)) = task {
-                    Some(Self::wait_for_task(task.clone()).fuse())
-                } else {
-                    None
+        Ok(Box::pin(stream::try_unfold(
+            self,
+            move |mut this| async move {
+                let task = this.try_pull().await?;
+                if let Some(ClaimResult::Claimed(task)) = task {
+                    return Ok(Some((task, this)));
                 }
-                .into(),
-            );
-            let mut subscription = Box::pin(this.pubsub.subscribe(None).await?.fuse());
-            loop {
-                select! {
-                    tick = ticker => {
-                        if tick.is_some() {
-                            this.pubsub.narrowcast(Event::TaskMaturated("".to_owned())).await?;
-                        }
+                let mut ticker: Pin<Box<OptionFuture<_>>> = Box::pin(
+                    if let Some(ClaimResult::Immature(task)) = task {
+                        Some(Self::wait_for_task(task.clone()).fuse())
+                    } else {
+                        None
                     }
-                    ev = subscription.select_next_some() => {
-                        match ev {
-                            Event::TaskMaturated(_) => {
-                                let task = this.try_pull().await?;
-                                if let Some(ClaimResult::Claimed(task)) = task {
-                                    return Ok(Some((task, this)));
-                                } else if let Some(ClaimResult::Immature(task)) = task {
-                                    ticker = Box::pin(
-                                        Some(Self::wait_for_task(task.clone()).fuse()).into()
-                                    );
-                                }
+                    .into(),
+                );
+                let mut subscription = Box::pin(this.pubsub.subscribe(None).await?.fuse());
+                loop {
+                    select! {
+                        tick = ticker => {
+                            if tick.is_some() {
+                                this.pubsub.narrowcast(Event::TaskMaturated("".to_owned())).await?;
                             }
-                            _others => {}
                         }
-                    }
-                };
-            }
-        }))
+                        ev = subscription.select_next_some() => {
+                            match ev {
+                                Event::TaskMaturated(_) => {
+                                    let task = this.try_pull().await?;
+                                    if let Some(ClaimResult::Claimed(task)) = task {
+                                        return Ok(Some((task, this)));
+                                    } else if let Some(ClaimResult::Immature(task)) = task {
+                                        ticker = Box::pin(
+                                            Some(Self::wait_for_task(task.clone()).fuse()).into()
+                                        );
+                                    }
+                                }
+                                _others => {}
+                            }
+                        }
+                    };
+                }
+            },
+        )))
     }
 
     /// Report the output of a task to the queue and mark it as acknowledged
@@ -147,27 +151,23 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
     /// Await a task to be acked
     pub async fn await_task(
         &mut self,
-        task: PendingTask,
+        task_id: TaskId,
     ) -> Result<AckedTask<TOutput>, QueueError<TStorage::Error, TEvent::Error>> {
         let mut ticker = Box::pin(async move {}.fuse());
-        let mut subscription = self
-            .pubsub
-            .subscribe(Some(task.get_task_id().to_owned()))
-            .await?
-            .fuse();
+        let mut subscription = self.pubsub.subscribe(Some(task_id.clone())).await?.fuse();
         loop {
             select! {
                 _=ticker=>{
-                    if let Some(Task::Acked(task))=self.storage.find_task(task.get_task_id().to_owned()).await.map_err(|e|QueueError::StorageError(e))?{
+                    if let Some(Task::Acked(task))=self.storage.find_task(task_id.clone()).await.map_err(|e|QueueError::StorageError(e))?{
                         return Ok(Self::parse_acked(task)?);
                     }
                 },
                 event=subscription.select_next_some()=>{
                     if let Event::TaskAcked(_) = event{
-                        if let Some(Task::Acked(task))=self.storage.find_task(task.get_task_id().to_owned()).await.map_err(|e|QueueError::StorageError(e))?{
+                        if let Some(Task::Acked(task))=self.storage.find_task(task_id.clone()).await.map_err(|e|QueueError::StorageError(e))?{
                             return Ok(Self::parse_acked(task)?);
                         }else{
-                            return Err(QueueError::Unknown(format!("task {} acked but not found",task.get_task_id())));
+                            return Err(QueueError::Unknown(format!("task {} acked but not found",&task_id)));
                         }
                     }
                 }
@@ -239,6 +239,7 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::SinkExt;
     use serde::{Deserialize, Serialize};
     use siling_mock::{event::MockEventAdaptor, storage::MockStorageAdaptor};
     use siling_traits::TaskConfig;
@@ -289,15 +290,231 @@ mod tests {
     async fn can_push_then_consume() {
         let mut queue = get_queue(QueueConfig::default());
         let param = uuid::Uuid::new_v4().to_string();
+        let pending = queue
+            .push(param.clone().into(), TaskConfig::default())
+            .await
+            .unwrap()
+            .unwrap();
+        let claims = consume_queue(&queue, 1).await;
+        let task = claims.first().unwrap();
+        assert_eq!(&task.task_id, pending.get_task_id());
+        assert_eq!(&task.input.param, &param);
+    }
+
+    #[tokio::test]
+    async fn can_consume_then_push() {
+        let mut queue = get_queue(QueueConfig::default());
+        let param = uuid::Uuid::new_v4().to_string();
+        let queue2 = queue.clone();
+        let (mut sender, mut recver) = futures::channel::mpsc::channel(0);
+        tokio::spawn(async move {
+            let claims = consume_queue(&queue2, 1).await;
+            sender
+                .send(claims.first().unwrap().to_owned())
+                .await
+                .unwrap();
+        });
+        tokio::time::sleep(chrono::Duration::milliseconds(100).to_std().unwrap()).await;
+        let pending = queue
+            .push(param.clone().into(), TaskConfig::default())
+            .await
+            .unwrap()
+            .unwrap();
+        let task = recver.next().await.unwrap();
+        assert_eq!(&task.task_id, pending.get_task_id());
+        assert_eq!(&task.input.param, &param);
+    }
+
+    #[tokio::test]
+    async fn can_push_delayed_then_consume() {
+        let delay = chrono::Duration::seconds(1);
+        let mut queue = get_queue(QueueConfig::default().claim_ttl(chrono::Duration::seconds(1)));
+        let param = uuid::Uuid::new_v4().to_string();
+        let push_date = chrono::Utc::now().naive_utc();
+        let pending = queue
+            .push(
+                param.clone().into(),
+                TaskConfig::default().mature_at(chrono::Utc::now().naive_utc() + delay),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let claims = consume_queue(&queue, 1).await;
+        let claim_date = chrono::Utc::now().naive_utc();
+        let task = claims.first().unwrap();
+        assert_eq!(&task.task_id, pending.get_task_id());
+        assert_eq!(&task.input.param, &param);
+        assert!(claim_date >= push_date + delay);
+    }
+
+    #[tokio::test]
+    async fn can_reclaim_timed_out_claim() {
+        let timeout = chrono::Duration::seconds(1);
+        let mut queue = get_queue(QueueConfig::default().claim_ttl(timeout.clone()));
+        let param = uuid::Uuid::new_v4().to_string();
+        let pending = queue
+            .push(param.clone().into(), TaskConfig::default())
+            .await
+            .unwrap()
+            .unwrap();
+        consume_queue(&queue, 1).await;
+        tokio::time::sleep(
+            (timeout + chrono::Duration::milliseconds(100))
+                .to_std()
+                .unwrap(),
+        )
+        .await;
+        let claims = consume_queue(&queue, 1).await;
+        let task = claims.first().unwrap();
+        assert_eq!(&task.task_id, pending.get_task_id());
+        assert_eq!(&task.input.param, &param);
+    }
+
+    #[tokio::test]
+    async fn can_ack_claimed_task() {
+        let mut queue = get_queue(QueueConfig::default());
+        let param = uuid::Uuid::new_v4().to_string();
+        let output = uuid::Uuid::new_v4().to_string();
         queue
             .push(param.clone().into(), TaskConfig::default())
             .await
+            .unwrap()
             .unwrap();
+        let claims = consume_queue(&queue, 1).await;
+        let claim = claims.first().unwrap();
+        queue
+            .ack(claim.to_owned(), output.clone().into())
+            .await
+            .unwrap();
+        assert!(queue
+            .ack(claim.to_owned(), output.clone().into())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn can_await_pending_task() {
+        let mut queue = get_queue(QueueConfig::default());
+        let param = uuid::Uuid::new_v4().to_string();
+        let output = uuid::Uuid::new_v4().to_string();
+        let pending = queue
+            .push(param.clone().into(), TaskConfig::default())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut queue2 = queue.clone();
+        let pending2 = pending.clone();
+        let (mut sender, mut recver) = futures::channel::mpsc::channel(0);
+        tokio::spawn(async move {
+            sender
+                .send(
+                    queue2
+                        .await_task(pending2.get_task_id().to_owned())
+                        .await
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+        tokio::time::sleep(chrono::Duration::milliseconds(100).to_std().unwrap()).await;
+        let claims = consume_queue(&queue, 1).await;
+        let claim = claims.first().unwrap();
+        queue
+            .ack(claim.to_owned(), output.clone().into())
+            .await
+            .unwrap();
+        let acked = recver.next().await.unwrap();
+        assert_eq!(&acked.task_id, pending.get_task_id());
+        assert_eq!(&acked.output.output, &output);
+    }
+
+    #[tokio::test]
+    async fn can_await_claimed_task() {
+        let mut queue = get_queue(QueueConfig::default());
+        let param = uuid::Uuid::new_v4().to_string();
+        let output = uuid::Uuid::new_v4().to_string();
+        let pending = queue
+            .push(param.clone().into(), TaskConfig::default())
+            .await
+            .unwrap()
+            .unwrap();
+        let claims = consume_queue(&queue, 1).await;
+        let claim = claims.first().unwrap();
+        let mut queue2 = queue.clone();
+        let pending2 = pending.clone();
+        let (mut sender, mut recver) = futures::channel::mpsc::channel(0);
+        tokio::spawn(async move {
+            sender
+                .send(
+                    queue2
+                        .await_task(pending2.get_task_id().to_owned())
+                        .await
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+        tokio::time::sleep(chrono::Duration::milliseconds(100).to_std().unwrap()).await;
+        queue
+            .ack(claim.to_owned(), output.clone().into())
+            .await
+            .unwrap();
+        let acked = recver.next().await.unwrap();
+        assert_eq!(&acked.task_id, pending.get_task_id());
+        assert_eq!(&acked.output.output, &output);
+    }
+
+    #[tokio::test]
+    async fn can_await_acked_task() {
+        let mut queue = get_queue(QueueConfig::default());
+        let param = uuid::Uuid::new_v4().to_string();
+        let output = uuid::Uuid::new_v4().to_string();
+        let pending = queue
+            .push(param.clone().into(), TaskConfig::default())
+            .await
+            .unwrap()
+            .unwrap();
+        let claims = consume_queue(&queue, 1).await;
+        let claim = claims.first().unwrap();
+        queue
+            .ack(claim.to_owned(), output.clone().into())
+            .await
+            .unwrap();
+        let acked = queue
+            .await_task(pending.get_task_id().to_owned())
+            .await
+            .unwrap();
+        assert_eq!(&acked.task_id, pending.get_task_id());
+        assert_eq!(&acked.output.output, &output);
     }
 
     fn get_queue(
         config: QueueConfig,
     ) -> Queue<Input, Output, MockStorageAdaptor, MockEventAdaptor> {
         Queue::new(MockStorageAdaptor::new(), MockEventAdaptor::new(), config)
+    }
+
+    async fn consume_queue(
+        queue: &Queue<Input, Output, MockStorageAdaptor, MockEventAdaptor>,
+        len: usize,
+    ) -> Vec<ClaimedTask<Input>> {
+        let mut result = vec![];
+        let mut consumer = queue.to_owned().consume().await.unwrap().fuse();
+        if len > 0 {
+            while let Ok(task) = consumer.select_next_some().await {
+                result.push(task);
+                if result.len() >= len {
+                    break;
+                }
+            }
+        }
+        if result.len() != len {
+            panic!(
+                "expect to claim {} tasks but received {}",
+                len,
+                result.len()
+            );
+        }
+        result
     }
 }

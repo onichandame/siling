@@ -35,7 +35,7 @@ impl EventAdaptor for MockEventAdaptor {
     async fn subscribe(
         &self,
         id: Option<TaskId>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Event>>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Error> {
         Ok(Box::pin(self.channel.1.clone().filter(move |event| {
             let id = id.clone();
             let event = event.clone();

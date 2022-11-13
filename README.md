@@ -1,10 +1,7 @@
 # Siling
 
-Distributed task queue in Rust
+Distributed task queue client in Rust.
 
-# Features
+# Usage
 
-- add async tasks to a queue
-- wait for a task to return
-- cancel a pending task
-- list tasks
+see [the tests](./siling/src/queue/mod.rs#L240)

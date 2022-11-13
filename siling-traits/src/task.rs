@@ -15,11 +15,13 @@ pub struct TaskConfig {
     pub mature_at: Option<chrono::NaiveDateTime>,
 }
 
+#[derive(Clone)]
 pub enum PendingTask {
     Mature(MatureTask),
     Immature(ImmatureTask),
 }
 
+#[derive(Clone)]
 pub struct MatureTask {
     pub task_id: TaskId,
 }
@@ -92,6 +94,7 @@ impl<TInput: Argument, TOutput: Argument> From<AckedTask<TOutput>> for Task<TInp
 }
 
 impl TaskConfig {
+    /// Set the date(UTC) after which the task will be ready to be run
     pub fn mature_at(mut self, mature_at: chrono::NaiveDateTime) -> Self {
         self.mature_at = Some(mature_at);
         self

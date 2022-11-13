@@ -44,7 +44,7 @@ impl<TAdaptor: EventAdaptor> Pubsub<TAdaptor> {
     pub async fn subscribe(
         &mut self,
         id: Option<TaskId>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Event>>>, PubsubError<TAdaptor::Error>> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, PubsubError<TAdaptor::Error>> {
         let broad = self
             .adaptor
             .subscribe(id.clone())

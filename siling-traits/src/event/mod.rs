@@ -18,7 +18,7 @@ pub trait EventAdaptor: Send + Sync + Clone {
     async fn subscribe(
         &self,
         id: Option<TaskId>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Event>>>, Self::Error>;
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Error>;
 }
 
 #[derive(Clone, Debug, PartialEq)]

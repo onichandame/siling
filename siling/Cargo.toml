@@ -19,6 +19,6 @@ async-broadcast = "0.4.1"
 
 
 [dev-dependencies]
-tokio = { version = "1.21.2", features = ["rt", "macros"] }
+tokio = { version = "1.21.2", features = ["rt", "macros", "time"] }
 siling-mock = { path = "../mock" }
 uuid = { version = "1.2.1", features = ["v4"] }
