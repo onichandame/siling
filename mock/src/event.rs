@@ -3,10 +3,7 @@ use std::pin::Pin;
 use async_broadcast::{broadcast, Receiver, SendError, Sender};
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
-use siling::{
-    event::{Event, EventAdaptor},
-    task::TaskId,
-};
+use siling_traits::{Event, EventAdaptor, TaskId};
 use thiserror::Error;
 
 #[derive(Clone)]
@@ -55,6 +52,6 @@ impl EventAdaptor for MockEventAdaptor {
 }
 
 #[cfg(test)]
-use siling::test_event_adaptor;
+use siling_traits::test_event_adaptor;
 #[cfg(test)]
 test_event_adaptor!(MockEventAdaptor::new());

@@ -3,10 +3,7 @@ use std::pin::Pin;
 use futures::{stream_select, Stream, StreamExt};
 use thiserror::Error;
 
-use crate::{
-    event::{Event, EventAdaptor},
-    task::TaskId,
-};
+use siling_traits::{Event, EventAdaptor, TaskId};
 
 #[derive(Clone)]
 pub struct Pubsub<TAdaptor: EventAdaptor> {

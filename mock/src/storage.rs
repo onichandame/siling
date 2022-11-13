@@ -2,12 +2,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::lock::Mutex;
-use siling::{
-    claim::{ClaimId, ClaimResult},
-    storage::StorageAdaptor,
-    task::{
-        AckedTask, ClaimedTask, ImmatureTask, MatureTask, PendingTask, Task, TaskConfig, TaskId,
-    },
+use siling_traits::{
+    AckedTask, ClaimId, ClaimResult, ClaimedTask, ImmatureTask, MatureTask, PendingTask,
+    StorageAdaptor, Task, TaskConfig, TaskId,
 };
 use thiserror::Error;
 
@@ -34,6 +31,10 @@ impl MockStorageAdaptor {
         Self {
             inner: Default::default(),
         }
+    }
+
+    fn now() -> chrono::NaiveDateTime {
+        chrono::Utc::now().naive_utc()
     }
 }
 
@@ -234,13 +235,7 @@ struct StoredAckedTask {
     acked_at: chrono::NaiveDateTime,
 }
 
-impl MockStorageAdaptor {
-    fn now() -> chrono::NaiveDateTime {
-        chrono::Utc::now().naive_utc()
-    }
-}
-
 #[cfg(test)]
-use siling::test_storage_adaptor;
+use siling_traits::test_storage_adaptor;
 #[cfg(test)]
 test_storage_adaptor!(MockStorageAdaptor::new());

@@ -7,7 +7,7 @@ pub fn expand_event_adaptor_tests(factory: TokenStream) -> TokenStream {
         mod tests {
             use super::*;
             use futures::{StreamExt,TryStreamExt,stream,join};
-            use siling::event::{EventAdaptor, Event};
+            use siling_traits::{EventAdaptor, Event};
 
             #[tokio::test]
             async fn can_broadcast_events() {

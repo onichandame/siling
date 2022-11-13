@@ -2,15 +2,12 @@ use std::{marker::PhantomData, pin::Pin};
 
 use futures::{future::OptionFuture, select, stream, FutureExt, Stream, StreamExt};
 use futures_timer::Delay;
-
-use crate::{
-    argument::Argument,
-    claim::ClaimResult,
-    event::{Event, EventAdaptor},
-    pubsub::Pubsub,
-    storage::StorageAdaptor,
-    task::{ClaimedTask, ImmatureTask, PendingTask, TaskConfig},
+use siling_traits::{
+    AckedTask, Argument, ClaimResult, ClaimedTask, Event, EventAdaptor, ImmatureTask, PendingTask,
+    StorageAdaptor, Task, TaskConfig,
 };
+
+use crate::pubsub::Pubsub;
 
 use self::error::QueueError;
 
@@ -147,6 +144,37 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
         Ok(())
     }
 
+    /// Await a task to be acked
+    pub async fn await_task(
+        &mut self,
+        task: PendingTask,
+    ) -> Result<AckedTask<TOutput>, QueueError<TStorage::Error, TEvent::Error>> {
+        let mut ticker = Box::pin(async move {}.fuse());
+        let mut subscription = self
+            .pubsub
+            .subscribe(Some(task.get_task_id().to_owned()))
+            .await?
+            .fuse();
+        loop {
+            select! {
+                _=ticker=>{
+                    if let Some(Task::Acked(task))=self.storage.find_task(task.get_task_id().to_owned()).await.map_err(|e|QueueError::StorageError(e))?{
+                        return Ok(Self::parse_acked(task)?);
+                    }
+                },
+                event=subscription.select_next_some()=>{
+                    if let Event::TaskAcked(_) = event{
+                        if let Some(Task::Acked(task))=self.storage.find_task(task.get_task_id().to_owned()).await.map_err(|e|QueueError::StorageError(e))?{
+                            return Ok(Self::parse_acked(task)?);
+                        }else{
+                            return Err(QueueError::Unknown(format!("task {} acked but not found",task.get_task_id())));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     async fn try_pull(
         &mut self,
     ) -> Result<Option<ClaimResult<TInput>>, QueueError<TStorage::Error, TEvent::Error>> {
@@ -200,74 +228,76 @@ impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: Even
         })
     }
 
-    ///// Get the current status of a task
-    //pub async fn fetch(&self, id: TaskId) -> Result<Option<Task<TInput, TOutput>>, QueueError> {
-    //    let stored_task = self.storage.find_task(id.clone()).await?;
-    //    Ok(if let Some(task) = stored_task {
-    //        Some(match task.status {
-    //            StoredTaskStatus::Pending => Task::Pending { id },
-    //            StoredTaskStatus::Claimed => Task::Claimed(ClaimedTask {
-    //                id: id.clone(),
-    //                input: serde_json::from_value(task.input)?,
-    //            }),
-    //            StoredTaskStatus::Acked => Task::Acked(AckedTask {
-    //                id: id.clone(),
-    //                output: serde_json::from_value(task.output.ok_or(QueueError::TaskError(
-    //                    id.clone(),
-    //                    "output missing".to_owned(),
-    //                ))?)?,
-    //            }),
-    //        })
-    //    } else {
-    //        None
-    //    })
-    //}
+    fn parse_acked(acked: AckedTask<String>) -> Result<AckedTask<TOutput>, serde_json::Error> {
+        Ok(AckedTask {
+            task_id: acked.task_id,
+            output: serde_json::from_str(&acked.output)?,
+        })
+    }
+}
 
-    ///// Blocking for the result of a task
-    //pub async fn wait(&self, id: TaskId) -> Result<AckedTask<TOutput>, QueueError> {
-    //    let task = self.fetch(id.clone()).await?;
-    //    let handle_event = || async {
-    //        let task = self
-    //            .fetch(id.clone())
-    //            .await?
-    //            .ok_or(QueueError::TaskNotFound(id.clone()))?;
-    //        if let Task::Acked(task) = task {
-    //            return Ok(Some(task));
-    //        }
-    //        Ok::<Option<AckedTask<TOutput>>, QueueError>(None)
-    //    };
-    //    match task {
-    //        Some(task) => match task {
-    //            Task::Pending { id: _ } | Task::Claimed(_) => {
-    //                let mut subscriber = self.event.subscribe(id.clone()).await?.fuse();
-    //                let mut ticker = Box::pin(
-    //                    stream::unfold(5, |timeout| async move {
-    //                        Delay::new(Duration::from_secs(timeout)).await;
-    //                        let max_timeout = 60;
-    //                        let next_timeout = std::cmp::min(timeout * 2, max_timeout);
-    //                        Some(((), next_timeout))
-    //                    })
-    //                    .fuse(),
-    //                );
-    //                select! {
-    //                    event = subscriber.select_next_some() => {
-    //                        if let Event::TaskAcked(_) = event {
-    //                            if let Some(task) = handle_event().await? {
-    //                                return Ok(task);
-    //                            }
-    //                        }
-    //                    },
-    //                    _ = ticker.select_next_some() => {
-    //                        if let Some(task) = handle_event().await? {
-    //                            return Ok(task);
-    //                        }
-    //                    }
-    //                };
-    //                Err(QueueError::Unknown("subscription failed".to_owned()))
-    //            }
-    //            Task::Acked(task) => Ok(task),
-    //        },
-    //        None => Err(QueueError::TaskNotFound(id.clone())),
-    //    }
-    //}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+    use siling_mock::{event::MockEventAdaptor, storage::MockStorageAdaptor};
+    use siling_traits::TaskConfig;
+
+    #[derive(Serialize, Deserialize, Clone)]
+    struct Input {
+        param: String,
+    }
+
+    impl From<String> for Input {
+        fn from(param: String) -> Self {
+            Self { param }
+        }
+    }
+
+    #[derive(Serialize, Deserialize, Clone)]
+    struct Output {
+        output: String,
+    }
+
+    impl From<String> for Output {
+        fn from(output: String) -> Self {
+            Self { output }
+        }
+    }
+
+    #[tokio::test]
+    async fn can_push_tasks() {
+        let mut queue = get_queue(QueueConfig::default());
+        let param = uuid::Uuid::new_v4().to_string();
+        assert!(queue
+            .push(param.clone().into(), TaskConfig::default())
+            .await
+            .unwrap()
+            .is_some());
+        assert!(queue
+            .push(
+                param.clone().into(),
+                TaskConfig::default()
+                    .mature_at(chrono::Utc::now().naive_utc() + chrono::Duration::seconds(100)),
+            )
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn can_push_then_consume() {
+        let mut queue = get_queue(QueueConfig::default());
+        let param = uuid::Uuid::new_v4().to_string();
+        queue
+            .push(param.clone().into(), TaskConfig::default())
+            .await
+            .unwrap();
+    }
+
+    fn get_queue(
+        config: QueueConfig,
+    ) -> Queue<Input, Output, MockStorageAdaptor, MockEventAdaptor> {
+        Queue::new(MockStorageAdaptor::new(), MockEventAdaptor::new(), config)
+    }
 }

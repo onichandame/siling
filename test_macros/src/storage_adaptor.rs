@@ -7,7 +7,7 @@ pub fn expand_storage_tests(factory: TokenStream) -> TokenStream {
         mod tests {
             use super::*;
             use futures::{StreamExt,TryStreamExt,stream,join};
-            use siling::{storage::StorageAdaptor,task::{TaskConfig,PendingTask,Task},claim::ClaimResult};
+            use siling_traits::{StorageAdaptor,TaskConfig,PendingTask,Task,ClaimResult};
 
             #[tokio::test]
             async fn can_add_task() {

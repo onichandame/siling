@@ -1,6 +1,7 @@
+use siling_traits::TaskId;
 use thiserror::Error;
 
-use crate::{pubsub::PubsubError, task::TaskId};
+use crate::pubsub::PubsubError;
 
 #[derive(Error, Debug)]
 pub enum QueueError<TStorageError, TEventError> {
