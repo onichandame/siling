@@ -3,7 +3,7 @@ use std::pin::Pin;
 use async_broadcast::{broadcast, Receiver, SendError, Sender};
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
-use siling_traits::{Event, EventAdaptor, TaskId};
+use siling_traits::{BroadcasterAdaptor, Event, TaskId};
 use thiserror::Error;
 
 #[derive(Clone)]
@@ -25,7 +25,7 @@ impl MockEventAdaptor {
 }
 
 #[async_trait]
-impl EventAdaptor for MockEventAdaptor {
+impl BroadcasterAdaptor for MockEventAdaptor {
     type Error = Error;
     async fn publish(&self, event: Event) -> Result<(), Self::Error> {
         self.channel.0.broadcast(event).await?;

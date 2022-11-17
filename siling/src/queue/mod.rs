@@ -3,8 +3,8 @@ use std::{marker::PhantomData, pin::Pin};
 use futures::{future::OptionFuture, select, stream, FutureExt, Stream, StreamExt};
 use futures_timer::Delay;
 use siling_traits::{
-    AckedTask, Argument, ClaimResult, ClaimedTask, Event, EventAdaptor, ImmatureTask, PendingTask,
-    StorageAdaptor, Task, TaskConfig, TaskId,
+    AckedTask, Argument, BroadcasterAdaptor, ClaimResult, ClaimedTask, Event, ImmatureTask,
+    PendingTask, StorageAdaptor, Task, TaskConfig, TaskId,
 };
 
 use crate::pubsub::Pubsub;
@@ -22,7 +22,7 @@ pub struct Queue<
     TInput: Argument,
     TOutput: Argument,
     TStorage: StorageAdaptor,
-    TEvent: EventAdaptor,
+    TEvent: BroadcasterAdaptor,
 > {
     config: QueueConfig,
     storage: TStorage,
@@ -31,7 +31,7 @@ pub struct Queue<
     output: PhantomData<TOutput>,
 }
 
-impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: EventAdaptor>
+impl<TInput: Argument, TOutput: Argument, TStorage: StorageAdaptor, TEvent: BroadcasterAdaptor>
     Queue<TInput, TOutput, TStorage, TEvent>
 {
     pub fn new(storage: TStorage, event: TEvent, config: QueueConfig) -> Self {
@@ -241,7 +241,7 @@ mod tests {
     use super::*;
     use futures::SinkExt;
     use serde::{Deserialize, Serialize};
-    use siling_mock::{event::MockEventAdaptor, storage::MockStorageAdaptor};
+    use siling_mock::{broadcaster::MockEventAdaptor, storage::MockStorageAdaptor};
     use siling_traits::TaskConfig;
 
     #[derive(Serialize, Deserialize, Clone)]

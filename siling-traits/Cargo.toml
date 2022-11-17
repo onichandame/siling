@@ -10,7 +10,7 @@ async-trait = "0.1.58"
 chrono = "0.4.23"
 futures = "0.3.25"
 serde = "1.0.147"
-test_macros = { path = "../test_macros", optional = true }
+trait-tests = { path = "../trait-tests", optional = true }
 
 [features]
-tests = ["dep:test_macros"]
+tests = ["dep:trait-tests"]

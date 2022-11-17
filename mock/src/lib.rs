@@ -1,2 +1,2 @@
-pub mod event;
+pub mod broadcaster;
 pub mod storage;

@@ -3,10 +3,10 @@ use std::pin::Pin;
 use futures::{stream_select, Stream, StreamExt};
 use thiserror::Error;
 
-use siling_traits::{Event, EventAdaptor, TaskId};
+use siling_traits::{BroadcasterAdaptor, Event, TaskId};
 
 #[derive(Clone)]
-pub struct Pubsub<TAdaptor: EventAdaptor> {
+pub struct Pubsub<TAdaptor: BroadcasterAdaptor> {
     adaptor: TAdaptor,
     channel: (
         async_broadcast::Sender<Event>,
@@ -22,7 +22,7 @@ pub enum PubsubError<TBroadcastError> {
     NarrowcastError(#[from] async_broadcast::SendError<Event>),
 }
 
-impl<TAdaptor: EventAdaptor> Pubsub<TAdaptor> {
+impl<TAdaptor: BroadcasterAdaptor> Pubsub<TAdaptor> {
     pub fn new(adaptor: TAdaptor) -> Self {
         let channel = async_broadcast::broadcast(16);
         Self { adaptor, channel }
